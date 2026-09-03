@@ -1,0 +1,28 @@
+{
+  "id": "./",
+  "name": "V2 Marathon",
+  "short_name": "V2 Marathon",
+  "description": "快速记录 V2 抱石马拉松训练，支持离线使用。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d1410",
+  "theme_color": "#101813",
+  "categories": ["sports", "fitness", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
