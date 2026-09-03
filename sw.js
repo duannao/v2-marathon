@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "v2-marathon-shell-v1";
+const CACHE_NAME = "v2-marathon-shell-v2";
 const APP_SHELL = [
   "./",
   "./index.html",

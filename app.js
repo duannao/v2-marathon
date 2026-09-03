@@ -16,7 +16,7 @@
 
   function createSession() {
     return {
-      version: 1,
+      version: 2,
       id: makeId(),
       name: "V2 Marathon",
       target: TARGET,
@@ -24,6 +24,8 @@
       finishedAt: null,
       status: "active",
       routes: [],
+      zones: [],
+      currentZoneId: null,
       blockChecks: [],
       restSessions: []
     };
@@ -38,12 +40,27 @@
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && Array.isArray(saved.routes) && Array.isArray(saved.blockChecks)) {
         saved.restSessions = saved.restSessions || [];
-        return saved;
+        return normalizeState(saved);
       }
     } catch (error) {
       console.warn("Could not restore session", error);
     }
     return createSession();
+  }
+
+  function normalizeState(saved) {
+    saved.version = 2;
+    saved.zones = Array.isArray(saved.zones) ? saved.zones : [];
+    saved.currentZoneId = saved.zones.some(zone => zone.id === saved.currentZoneId) ? saved.currentZoneId : null;
+    saved.routes = saved.routes.map(route => ({
+      ...route,
+      styles: Array.isArray(route.styles) ? route.styles : [],
+      zoneId: route.zoneId || null,
+      zone: route.zone || null,
+      zoneRouteNumber: route.zoneRouteNumber != null && route.zoneRouteNumber !== "" && Number.isFinite(Number(route.zoneRouteNumber)) ? Number(route.zoneRouteNumber) : null,
+      routeId: route.routeId || ""
+    }));
+    return saved;
   }
 
   function saveState() {
@@ -94,6 +111,27 @@
     return Math.min(Math.floor(state.routes.length / BLOCK_SIZE) + 1, Math.ceil(state.target / BLOCK_SIZE));
   }
 
+  function getZone(zoneId) {
+    return state.zones.find(zone => zone.id === zoneId) || null;
+  }
+
+  function currentZone() {
+    return getZone(state.currentZoneId);
+  }
+
+  function nextZoneRouteNumber(zoneId) {
+    if (!zoneId) return null;
+    const numbers = state.routes.filter(route => route.zoneId === zoneId).map(route => Number(route.zoneRouteNumber) || 0);
+    return (numbers.length ? Math.max(...numbers) : 0) + 1;
+  }
+
+  function zoneRouteLabel(route) {
+    const zoneName = route.zone || getZone(route.zoneId)?.name;
+    if (!zoneName) return "未分区";
+    const number = route.zoneRouteNumber ? `-${String(route.zoneRouteNumber).padStart(2, "0")}` : "";
+    return `${escapeHtml(zoneName)}${number}`;
+  }
+
   function render() {
     if (state.status === "finished") renderSummary();
     else renderMain();
@@ -115,6 +153,7 @@
             ${statCell("已尝试", stats.attempted)}${statCell("完成", stats.sent)}${statCell("Flash", stats.flash)}${statCell("失败", stats.failed)}${statCell("跳过", stats.skipped)}
           </div>
           <div class="rates"><div class="rate">Flash Rate <strong>${stats.flashRate}%</strong></div><div class="rate">Send Rate <strong>${stats.sendRate}%</strong></div></div>
+          <button class="zone-switch" data-action="zones"><span>当前分区</span><strong>${currentZone() ? escapeHtml(currentZone().name) : "未选择"}</strong><em>切换分区</em></button>
         </header>
 
         <div class="record-zone">
@@ -144,8 +183,8 @@
       <article class="history-item">
         <div class="route-num">#${String(route.routeNumber).padStart(2, "0")}</div>
         <div class="history-info" data-action="edit" data-id="${route.id}">
-          <div class="history-main"><span class="badge ${route.result}">${RESULTS[route.result]}</span>${route.attempts > 1 ? `<strong>×${route.attempts}${route.attemptsCapped ? "+" : ""}</strong>` : ""}</div>
-          <div class="history-meta">${route.styles.length ? route.styles.join(" · ") : "未选风格"}${route.quality ? ` · Quality ${route.quality}` : ""}${route.rpe ? ` · RPE ${route.rpe}` : ""}</div>
+          <div class="history-main"><strong class="zone-route">${zoneRouteLabel(route)}</strong><span class="badge ${route.result}">${RESULTS[route.result]}</span>${route.attempts > 1 ? `<strong>×${route.attempts}${route.attemptsCapped ? "+" : ""}</strong>` : ""}</div>
+          <div class="history-meta">${route.routeId ? `${escapeHtml(route.routeId)} · ` : ""}${route.styles.length ? route.styles.join(" · ") : "未选风格"}${route.quality ? ` · Quality ${route.quality}` : ""}${route.rpe ? ` · RPE ${route.rpe}` : ""}</div>
         </div>
         <button class="icon-delete" aria-label="删除线路 ${route.routeNumber}" data-action="delete" data-id="${route.id}">×</button>
       </article>`).join("")}</div>`;
@@ -153,10 +192,12 @@
 
   function openQuickRecord() {
     const routeNumber = state.routes.length + 1;
+    const zone = currentZone();
+    const zoneNumber = nextZoneRouteNumber(state.currentZoneId);
     openModal(`
       <button class="close-x" data-close aria-label="关闭">×</button>
       <h2>#${String(routeNumber).padStart(2, "0")}</h2>
-      <p class="modal-sub">结果如何？</p>
+      <p class="modal-sub">${zone ? `${escapeHtml(zone.name)}-${String(zoneNumber).padStart(2, "0")} · ` : "未分区 · "}结果如何？</p>
       <div class="result-grid">
         <button class="result-btn flash" data-result="flash">FLASH</button>
         <button class="result-btn send" data-result="send">SEND</button>
@@ -175,9 +216,12 @@
   }
 
   function addRoute(result, attempts, attemptsCapped = false) {
+    const zone = currentZone();
     const route = {
       id: makeId(), routeNumber: state.routes.length + 1, result, attempts,
       attemptsCapped, styles: [], quality: null, rpe: null, note: "",
+      zoneId: zone?.id || null, zone: zone?.name || null,
+      zoneRouteNumber: nextZoneRouteNumber(zone?.id), routeId: "",
       timestamp: new Date().toISOString(), block: blockFor(state.routes.length + 1), updatedAt: null
     };
     state.routes.push(route);
@@ -194,6 +238,12 @@
       <button class="close-x" data-detail-close="${justAdded ? "new" : "edit"}" aria-label="关闭">×</button>
       <h2>#${String(route.routeNumber).padStart(2, "0")} <span class="badge ${route.result}">${RESULTS[route.result]}</span></h2>
       <p class="modal-sub">${justAdded ? "已保存。以下均可跳过。" : "编辑线路信息"}</p>
+      <h3>分区与馆内线路 · 可选</h3>
+      <div class="zone-edit-grid">
+        <label><span>所属分区</span><select id="route-zone">${renderZoneOptions(route.zoneId, true)}</select></label>
+        <label><span>分区内编号</span><input id="zone-route-number" type="number" inputmode="numeric" min="1" max="999" value="${route.zoneRouteNumber || ""}" placeholder="自动"></label>
+      </div>
+      <label class="field-label"><span>线路标记 route_id</span><input id="route-id" maxlength="12" value="${escapeHtml(route.routeId)}" placeholder="如：蓝、38、左3"></label>
       <h3>结果</h3>
       <div class="chip-grid">${Object.entries(RESULTS).map(([key, label]) => `<button class="chip ${route.result === key ? "selected" : ""}" data-edit-result="${key}">${label}</button>`).join("")}</div>
       <div id="attempt-editor">${renderAttemptEditor(route)}</div>
@@ -221,6 +271,12 @@
     const route = state.routes.find(item => item.id === routeId);
     if (!route) return;
     route.note = modal.querySelector("#route-note").value.trim();
+    const selectedZoneId = modal.querySelector("#route-zone").value || null;
+    const selectedZone = getZone(selectedZoneId);
+    route.zoneId = selectedZoneId;
+    route.zone = selectedZone?.name || null;
+    route.zoneRouteNumber = selectedZoneId ? (Number(modal.querySelector("#zone-route-number").value) || nextZoneRouteNumber(selectedZoneId)) : null;
+    route.routeId = modal.querySelector("#route-id").value.trim();
     route.updatedAt = new Date().toISOString();
     saveState(); closeModal(); render(); showToast("线路信息已保存");
     maybeShowBlockCheck(route.routeNumber);
@@ -241,6 +297,39 @@
       ${renderScale("手指 / 关节不适", "discomfort", null, 0, 5, "完全没有", "明显不适")}
       <div id="pain-warning"></div>
       <div class="modal-actions"><button class="ghost-btn" data-end-from-check>结束训练</button><button class="save-btn" data-save-check="${block}">继续下一 Block</button></div>`);
+  }
+
+  function renderZoneOptions(selectedZoneId, includeUnassigned = false) {
+    const empty = includeUnassigned ? `<option value="">未分区</option>` : "";
+    return empty + state.zones.map(zone => `<option value="${zone.id}" ${zone.id === selectedZoneId ? "selected" : ""}>${escapeHtml(zone.name)}</option>`).join("");
+  }
+
+  function openZones() {
+    openModal(`
+      <button class="close-x" data-close aria-label="关闭">×</button>
+      <h2>切换分区</h2>
+      <p class="modal-sub">选择一次，之后新增线路会自动归入该分区。</p>
+      <div class="zone-list">
+        ${state.zones.length ? state.zones.map(zone => `<button class="zone-option ${zone.id === state.currentZoneId ? "selected" : ""}" data-select-zone="${zone.id}"><span>${escapeHtml(zone.name)}</span><strong>${state.routes.filter(route => route.zoneId === zone.id).length} 条</strong></button>`).join("") : `<div class="empty">到馆后按实际标识创建第一个分区</div>`}
+      </div>
+      <h3>创建新分区</h3>
+      <div class="inline-form"><input id="new-zone-name" maxlength="20" placeholder="例如：A区、Slab、Cave"><button class="save-btn" data-add-zone>添加并切换</button></div>`);
+  }
+
+  function addZone(modal) {
+    const input = modal.querySelector("#new-zone-name");
+    const name = input.value.trim();
+    if (!name) { showToast("请输入分区名称"); input.focus(); return; }
+    const existing = state.zones.find(zone => zone.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (existing) { selectZone(existing.id); return; }
+    const zone = { id: makeId(), name, createdAt: new Date().toISOString() };
+    state.zones.push(zone);
+    selectZone(zone.id);
+  }
+
+  function selectZone(zoneId) {
+    state.currentZoneId = zoneId;
+    saveState(); closeModal(); render(); showToast(`已切换到 ${getZone(zoneId)?.name}`);
   }
 
   function saveBlockCheck(block, modal) {
@@ -319,6 +408,7 @@
       </section>
       <section><div class="section-head"><h2>各 Block</h2><span>表现与疲劳</span></div>${renderBlockTable()}</section>
       <section><div class="section-head"><h2>线路类型</h2><span>可多选统计</span></div>${renderStyleTable()}</section>
+      <section><div class="section-head"><h2>按分区统计</h2><span>${state.zones.length} 个分区</span></div>${renderZoneTable()}</section>
       <section><div class="section-head"><h2>数据导出</h2></div><div class="quick-actions"><button class="secondary-btn" data-export="json">Export JSON</button><button class="secondary-btn" data-export="csv">Export CSV</button></div></section>
       <div class="footer-actions"><button class="save-btn" data-action="resume">返回继续记录</button><button class="danger-btn" data-action="new-session">开始新训练 / 清空本次训练</button><div class="footer-note">训练不是非得完成 50 条；今天的记录已经有价值。</div></div>
     </div>`;
@@ -348,15 +438,23 @@
     return `<table class="data-table"><thead><tr><th>Style</th><th>Attempted</th><th>Sent</th><th>Flash</th></tr></thead><tbody>${rows.map(row => { const stats = getStats(row.routes); return `<tr><td>${row.style}</td><td>${stats.attempted}</td><td>${stats.sent}</td><td>${stats.flash}</td></tr>`; }).join("")}</tbody></table>`;
   }
 
+  function renderZoneTable() {
+    const groups = state.zones.map(zone => ({ name: zone.name, routes: state.routes.filter(route => route.zoneId === zone.id) })).filter(group => group.routes.length);
+    const unassigned = state.routes.filter(route => !route.zoneId);
+    if (unassigned.length) groups.push({ name: "未分区", routes: unassigned });
+    if (!groups.length) return `<div class="empty">本次没有分区数据</div>`;
+    return `<table class="data-table"><thead><tr><th>分区</th><th>Attempted</th><th>Sent</th><th>Flash</th></tr></thead><tbody>${groups.map(group => { const stats = getStats(group.routes); return `<tr><td>${escapeHtml(group.name)}</td><td>${stats.attempted}</td><td>${stats.sent}</td><td>${stats.flash}</td></tr>`; }).join("")}</tbody></table>`;
+  }
+
   function exportData(format) {
     if (format === "json") download(`v2-marathon-${dateSlug()}.json`, JSON.stringify(state, null, 2), "application/json");
     else download(`v2-marathon-${dateSlug()}.csv`, makeCSV(), "text/csv;charset=utf-8");
   }
 
   function makeCSV() {
-    const rows = [["record_type", "route_number", "result", "attempts", "styles", "quality", "RPE", "timestamp", "block", "fatigue", "pump", "discomfort", "note"]];
-    state.routes.forEach(route => rows.push(["route", route.routeNumber, route.result, route.attempts, route.styles.join("|"), route.quality ?? "", route.rpe ?? "", route.timestamp, route.block, "", "", "", route.note]));
-    state.blockChecks.forEach(check => rows.push(["block_fatigue", "", "", "", "", "", "", check.timestamp, check.block, check.fatigue, check.pump, check.discomfort, ""]));
+    const rows = [["record_type", "route_number", "zone", "zone_route_number", "route_id", "result", "attempts", "styles", "quality", "RPE", "timestamp", "block", "fatigue", "pump", "discomfort", "note"]];
+    state.routes.forEach(route => rows.push(["route", route.routeNumber, route.zone || "", route.zoneRouteNumber ?? "", route.routeId || "", route.result, route.attempts, route.styles.join("|"), route.quality ?? "", route.rpe ?? "", route.timestamp, route.block, "", "", "", route.note]));
+    state.blockChecks.forEach(check => rows.push(["block_fatigue", "", "", "", "", "", "", "", "", "", check.timestamp, check.block, check.fatigue, check.pump, check.discomfort, ""]));
     return "\uFEFF" + rows.map(row => row.map(csvCell).join(",")).join("\r\n");
   }
 
@@ -389,6 +487,7 @@
     const target = event.target.closest("[data-action], [data-export]"); if (!target) return;
     const action = target.dataset.action;
     if (action === "record") openQuickRecord();
+    if (action === "zones") openZones();
     if (action === "rest") openRestTimer();
     if (action === "finish") finishSession();
     if (action === "edit") openDetails(target.dataset.id);
@@ -402,6 +501,8 @@
     const button = event.target.closest("button"); if (!button) return;
     const modal = button.closest(".modal");
     if (button.hasAttribute("data-close")) closeModal();
+    if (button.dataset.selectZone) selectZone(button.dataset.selectZone);
+    if (button.hasAttribute("data-add-zone")) addZone(modal);
     if (button.dataset.result === "flash") addRoute("flash", 1);
     if (button.dataset.result === "skipped") addRoute("skipped", 0);
     if (button.dataset.result === "send" || button.dataset.result === "failed") chooseAttempts(button.dataset.result);
